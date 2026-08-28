@@ -177,7 +177,17 @@ def scan_for_injected_instructions(text: str) -> InjectionScanResult:
     file's own `__main__` demo below, which runs an unambiguous injection
     attempt through this exact function and shows it sailing through
     uncaught. That gap is the assignment, not a bug report."""
-    return InjectionScanResult(suspicious=False, matched_patterns=())
+    if not isinstance(text, str):
+        return InjectionScanResult(suspicious=True, matched_patterns=("non-text content",))
+    patterns = (
+        r"ignore (?:all |any )?(?:previous|prior) instructions?",
+        r"(?:system|developer)\s*(?:prompt|override|message)",
+        r"\b(?:reveal|exfiltrate|print|send)\b.{0,80}\b(?:secret|token|credential|learner|scope)",
+        r"\b(?:you must now|instead,? record|also record this for)\b",
+        r"bỏ qua (?:mọi )?hướng dẫn",
+    )
+    matches = tuple(pattern for pattern in patterns if re.search(pattern, text, re.IGNORECASE))
+    return InjectionScanResult(suspicious=bool(matches), matched_patterns=matches)
 
 
 # ---------------------------------------------------------------------------
@@ -205,7 +215,21 @@ def redact(text: str) -> RedactionResult:
 
     This starter's version does not look at `text` at all — see this
     file's own `__main__` demo below."""
-    return RedactionResult(redacted_text=text, hits=())
+    if not isinstance(text, str):
+        return RedactionResult(redacted_text="[REDACTED: non-text output]", hits=("non-text",))
+    patterns = (
+        ("email", re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.I)),
+        ("phone", re.compile(r"\b(?:\+?\d[\d .-]{7,}\d)\b")),
+        ("credential", re.compile(r"\b(?:api[_ -]?key|password|secret|token)\s*[:=]\s*\S+", re.I)),
+        ("private-note", re.compile(r"\b(?:private|confidential)\s*:\s*[^\n]{12,}", re.I)),
+    )
+    hits: list[str] = []
+    redacted = text
+    for label, pattern in patterns:
+        if pattern.search(redacted):
+            hits.append(label)
+            redacted = pattern.sub(f"[REDACTED:{label}]", redacted)
+    return RedactionResult(redacted_text=redacted, hits=tuple(hits))
 
 
 # ---------------------------------------------------------------------------
@@ -246,6 +270,23 @@ def verify_arithmetic(text: str) -> ArithmeticCheckResult:
 # ---------------------------------------------------------------------------
 # 5. ABSTENTION POLICY — real, naive.
 # ---------------------------------------------------------------------------
+
+
+def verify_arithmetic(text: str) -> ArithmeticCheckResult:
+    """Verify explicit elementary equalities; other numbers need source evidence."""
+    if not isinstance(text, str):
+        return ArithmeticCheckResult(checked=False, ok=None, detail="not text")
+    equations = re.findall(r"(-?\d+(?:\.\d+)?)\s*([+\-*/])\s*(-?\d+(?:\.\d+)?)\s*=\s*(-?\d+(?:\.\d+)?)", text)
+    if not equations:
+        return ArithmeticCheckResult(checked=False, ok=None, detail="no explicit arithmetic equality")
+    for left, op, right, claimed in equations:
+        a, b, c = float(left), float(right), float(claimed)
+        if op == "/" and b == 0:
+            return ArithmeticCheckResult(checked=True, ok=False, detail="division by zero")
+        actual = {"+": a + b, "-": a - b, "*": a * b, "/": a / b}[op]
+        if abs(actual - c) > 1e-9:
+            return ArithmeticCheckResult(checked=True, ok=False, detail=f"{left} {op} {right} != {claimed}")
+    return ArithmeticCheckResult(checked=True, ok=True, detail="all explicit arithmetic equalities hold")
 
 
 def abstention_policy(grounding: GroundingResult) -> bool:
